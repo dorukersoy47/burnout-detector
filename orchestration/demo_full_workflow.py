@@ -201,20 +201,27 @@ def demo_complete_workflow():
     # ==================== FINAL SUMMARY ====================
     print_section("COMPLETE WORKFLOW SUMMARY")
 
+    # Safe summary fields (handle early-stop/validation failure)
+    approval_safe = orchestration.get('approval', {}) if validation_passed else {}
+    approver_text = (approval_safe.get('approver', 'N/A') or 'N/A').upper()
+    risk_text = (orchestration.get('risk_level', 'N/A') if validation_passed else 'N/A').upper()
+    execution_status = orchestration.get('execution', {}).get('status', 'skipped' if not validation_passed else 'unknown').upper()
+    executed_mark = '✓' if execution_status == 'EXECUTED' or execution_status == 'EXECUTED'.upper() else ('—' if not validation_passed else execution_status)
+
     print(f"""
     🎯 FULL CYCLE COMPLETED:
 
     1️⃣  Anomaly Detected: Productivity dropped 30%
     2️⃣  Root Cause Found: {investigation.root_cause[:80]}...
     3️⃣  Solution Planned: {plan.get('recommendation', 'Unknown')}
-    4️⃣  Approval Routed: {orchestration['approval']['approver'].upper()} approved
-    5️⃣  Intervention Executed: ✓
+    4️⃣  Approval Routed: {approver_text} approved
+    5️⃣  Intervention Executed: {executed_mark}
     6️⃣  Results Monitored: +{report['improvements']['productivity_pct']:.0%} productivity
 
     💡 Key Insights:
        - Root cause identified with {investigation.confidence_score:.0%} confidence
        - Solution based on {plan.get('similar_cases', 0)} historical cases
-       - Intervention cost: {orchestration['risk_level'].upper()} risk
+    - Intervention cost: {risk_text} risk
        - Expected ROI: HIGH
 
     📊 Next Steps:

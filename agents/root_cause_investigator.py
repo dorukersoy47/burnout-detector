@@ -6,12 +6,17 @@ Agentic Score: 95% - Full autonomous investigation with dynamic tool selection
 """
 
 import json
+import re
+from pathlib import Path
 from openai import OpenAI
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 import random
 from config import Config
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+COT_OUTPUT_PATH = ROOT_DIR / "latest_investigation_cot.json"
 
 
 @dataclass
@@ -281,6 +286,210 @@ class RootCauseInvestigator:
         except (TypeError, ValueError):
             return str(data)
 
+    # ------------------------------------------------------------------
+    # Chain-of-thought tracking helpers
+    # ------------------------------------------------------------------
+
+    def _reset_cot_tracking(self, alert: Dict, investigation_id: str) -> None:
+        self._cot_steps: List[Dict] = []
+        self._cot_lookup: Dict[int, Dict] = {}
+        self._cot_action_steps: set[int] = set()
+        self._cot_success_steps: set[int] = set()
+        self._cot_reasoning_count = 0
+        self._cot_planning_count = 0
+        self._cot_observation_count = 0
+        self._cot_conclusion_count = 0
+        self._cot_hypotheses: set[str] = set()
+        self._cot_tool_map: Dict[str, int] = {}
+        self._cot_last_step_number = 0
+        self._cot_last_added_step: Optional[int] = None
+        self._cot_conclusion_step_num: Optional[int] = None
+        self._cot_start_time = datetime.utcnow()
+        self._cot_alert_snapshot = alert or {}
+        self._cot_investigation_id = investigation_id
+        self._cot_payload_saved = False
+
+    def _add_cot_step(self, *, step_type: str, title: str, parent_step: Optional[Union[int, List[int]]] = None,
+                      **fields) -> int:
+        self._cot_last_step_number += 1
+        step_number = self._cot_last_step_number
+        step_entry = {
+            "step_number": step_number,
+            "step_type": step_type,
+            "timestamp": datetime.utcnow().isoformat(),
+            "parent_step": parent_step,
+            "title": title,
+            "children": []
+        }
+
+        for key, value in fields.items():
+            if value is not None:
+                step_entry[key] = value
+
+        self._cot_steps.append(step_entry)
+        self._cot_lookup[step_number] = step_entry
+
+        parents = []
+        if parent_step is not None:
+            if isinstance(parent_step, list):
+                parents = parent_step
+            else:
+                parents = [parent_step]
+        for parent in parents:
+            parent_entry = self._cot_lookup.get(parent)
+            if parent_entry is not None and step_number not in parent_entry["children"]:
+                parent_entry["children"].append(step_number)
+
+        # Track counts by type
+        if step_type == "reasoning":
+            self._cot_reasoning_count += 1
+        elif step_type == "planning":
+            self._cot_planning_count += 1
+        elif step_type == "action":
+            self._cot_action_steps.add(step_number)
+        elif step_type == "observation":
+            self._cot_observation_count += 1
+        elif step_type == "conclusion":
+            self._cot_conclusion_count += 1
+
+        self._cot_last_added_step = step_number
+        return step_number
+
+    def _update_cot_step(self, step_number: int, **fields) -> None:
+        step = self._cot_lookup.get(step_number)
+        if not step:
+            return
+        for key, value in fields.items():
+            if value is not None:
+                step[key] = value
+
+    def _register_tool_success(self, step_number: int, success: bool = True) -> None:
+        if success:
+            self._cot_success_steps.add(step_number)
+
+    def _record_observation(self, action_step: int, tool_name: str, result: Dict) -> None:
+        summary = self._format_json(result)
+        self._add_cot_step(
+            step_type="observation",
+            title=f"Observation from {tool_name}",
+            parent_step=action_step,
+            observation=summary
+        )
+
+    def _extract_hypotheses(self, text: str) -> None:
+        if not text:
+            return
+        matches = re.findall(r"hypothesis\s+([\w\-\s]+)", text, flags=re.IGNORECASE)
+        for match in matches:
+            cleaned = match.strip().strip(':').strip()
+            if cleaned:
+                self._cot_hypotheses.add(cleaned.lower())
+
+    def _build_alert_context(self, alert: Dict) -> Dict:
+        metrics = alert.get("metrics", {})
+        baseline = alert.get("baseline", {})
+        z_scores = alert.get("z_scores", {})
+        return {
+            "severity": alert.get("severity"),
+            "description": alert.get("description"),
+            "metrics": {
+                "productivity_score": metrics.get("productivity_score"),
+                "pr_review_time_hours": metrics.get("pr_review_time_hours"),
+                "pr_merge_time_hours": metrics.get("pr_merge_time_hours"),
+                "blocked_prs": metrics.get("blocked_prs"),
+                "meeting_hours_per_day": metrics.get("meeting_hours_per_day"),
+                "team_members_affected": metrics.get("team_members_affected", [])
+            },
+            "baseline": {
+                "productivity_mean": baseline.get("productivity_mean"),
+                "productivity_stdev": baseline.get("productivity_stdev"),
+                "review_time_mean": baseline.get("review_time_mean"),
+                "review_time_stdev": baseline.get("review_time_stdev")
+            },
+            "z_scores": {
+                "productivity": z_scores.get("productivity"),
+                "review_time": z_scores.get("review_time")
+            }
+        }
+
+    def _slugify(self, text_value: str) -> str:
+        if not text_value:
+            return "unknown"
+        text_value = text_value.lower()
+        text_value = re.sub(r"[^a-z0-9]+", "_", text_value)
+        text_value = re.sub(r"_+", "_", text_value).strip("_")
+        return text_value or "unknown"
+
+    def _determine_evidence_strength(self, evidence_count: int) -> str:
+        if evidence_count >= 5:
+            return "high"
+        if evidence_count >= 3:
+            return "medium"
+        if evidence_count >= 1:
+            return "low"
+        return "none"
+
+    def _compile_cot_payload(self, investigation: Investigation, final_confidence: float) -> Dict:
+        end_time = datetime.utcnow()
+        duration_seconds = round((end_time - self._cot_start_time).total_seconds(), 2)
+        alert_context = self._build_alert_context(self._cot_alert_snapshot)
+
+        action_steps = len(self._cot_action_steps)
+        success_steps = len(self._cot_success_steps)
+        conclusion_summary = investigation.root_cause or "Unknown"
+        evidence_count = len(investigation.evidence_trail)
+        evidence_strength = self._determine_evidence_strength(evidence_count)
+
+        affected_people = alert_context.get("metrics", {}).get("team_members_affected") or []
+
+        root_cause_block = {
+            "summary": conclusion_summary,
+            "type": self._slugify(conclusion_summary),
+            "confidence": round(final_confidence, 2),
+            "affected_people": affected_people,
+            "evidence_strength": evidence_strength
+        }
+
+        investigation_summary = {
+            "total_steps": len(self._cot_steps),
+            "reasoning_steps": self._cot_reasoning_count,
+            "planning_steps": self._cot_planning_count,
+            "action_steps": action_steps,
+            "observation_steps": self._cot_observation_count,
+            "conclusion_steps": self._cot_conclusion_count,
+            "tools_attempted": action_steps,
+            "tools_succeeded": success_steps,
+            "hypotheses_generated": len(self._cot_hypotheses),
+            "hypotheses_tested": min(len(self._cot_hypotheses), success_steps if success_steps else action_steps),
+            "duration_seconds": duration_seconds
+        }
+
+        payload = {
+            "investigation_id": investigation.investigation_id,
+            "timestamp": end_time.isoformat(),
+            "status": investigation.status,
+            "final_confidence": round(final_confidence, 2),
+            "duration_seconds": duration_seconds,
+            "alert_context": alert_context,
+            "investigation_steps": self._cot_steps,
+            "root_cause": root_cause_block,
+            "investigation_summary": investigation_summary
+        }
+
+        return payload
+
+    def _save_cot_payload(self, payload: Dict) -> None:
+        try:
+            COT_OUTPUT_PATH.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            print(f"✅ Chain of thought saved to: {COT_OUTPUT_PATH}")
+        except Exception as exc:
+            print(f"⚠️ Failed to write chain of thought file: {exc}")
+
+    def _finalize_cot_logs(self, investigation: Investigation, final_confidence: float) -> None:
+        payload = self._compile_cot_payload(investigation, final_confidence)
+        self._save_cot_payload(payload)
+        self._cot_payload_saved = True
+
     def _create_mock_investigation(self, investigation_id: str, alert: Dict) -> Investigation:
         """Create a mock investigation when API is unavailable"""
         return Investigation(
@@ -371,6 +580,7 @@ class RootCauseInvestigator:
         )
 
         self.step_counter = 0
+        self._reset_cot_tracking(alert, investigation_id)
 
         self._print_section("🔍 ROOT CAUSE INVESTIGATOR AGENT")
         self._log(f"🎯 Investigation ID: {investigation_id}")
@@ -384,7 +594,31 @@ class RootCauseInvestigator:
             self._print_subsection("NOTICE")
             self._log("⚠️  Investigation skipped due to missing OPENAI_API_KEY")
             self._log("   Using mock investigation data for demo...\n")
-            return self._create_mock_investigation(investigation_id, alert)
+            mock_investigation = self._create_mock_investigation(investigation_id, alert)
+            reason_step = self._add_cot_step(
+                step_type="reasoning",
+                title="Investigation Skipped",
+                parent_step=None,
+                agent_thoughts="OpenAI client unavailable; returning mock investigation data."
+            )
+            self._cot_conclusion_step_num = self._add_cot_step(
+                step_type="conclusion",
+                title="Mock Investigation Summary",
+                parent_step=reason_step,
+                agent_thoughts=mock_investigation.root_cause,
+                confidence=round(mock_investigation.confidence_score, 2),
+                confidence_reason="OpenAI client unavailable; using predefined mock results.",
+                evidence_gathered=len(mock_investigation.evidence_trail),
+                root_cause={
+                    "type": self._slugify(mock_investigation.root_cause),
+                    "summary": mock_investigation.root_cause,
+                    "confidence": round(mock_investigation.confidence_score, 2),
+                    "affected_people": alert.get("metrics", {}).get("team_members_affected", []),
+                    "evidence_strength": self._determine_evidence_strength(len(mock_investigation.evidence_trail))
+                }
+            )
+            self._finalize_cot_logs(mock_investigation, mock_investigation.confidence_score)
+            return mock_investigation
 
         # Run agentic loop with OpenAI
         system_prompt = """You are a Root Cause Investigator Agent. Your goal is to figure out WHY productivity dropped.
@@ -458,11 +692,36 @@ When you have a conclusion, provide only a brief summary of the root cause."""
                 self.step_counter += 1
 
                 assistant_text = assistant_message.content or ""
-                if assistant_text.strip():
+                trimmed_text = assistant_text.strip()
+                if trimmed_text:
                     self._print_section(f"STEP {self.step_counter}: AGENT REASONING")
                     self._log("🧠 AGENT THINKS:")
-                    self._log(assistant_text.strip())
+                    self._log(trimmed_text)
                     self._log("")
+
+                has_tool_calls = bool(getattr(assistant_message, "tool_calls", None))
+                conclusion_condition = finish_reason == "stop" and not has_tool_calls
+
+                parent_for_reasoning = self._cot_last_added_step if self._cot_steps else None
+                if conclusion_condition:
+                    parent_for_reasoning = sorted(self._cot_action_steps) if self._cot_action_steps else parent_for_reasoning
+                    reason_step_num = self._add_cot_step(
+                        step_type="conclusion",
+                        title="Final Analysis and Conclusion",
+                        parent_step=parent_for_reasoning,
+                        agent_thoughts=trimmed_text or None
+                    )
+                    self._cot_conclusion_step_num = reason_step_num
+                else:
+                    reason_step_num = self._add_cot_step(
+                        step_type="reasoning",
+                        title=f"Iteration {self.step_counter}: Agent Reasoning",
+                        parent_step=parent_for_reasoning,
+                        agent_thoughts=trimmed_text or None
+                    )
+
+                if trimmed_text:
+                    self._extract_hypotheses(trimmed_text)
 
                 # Append assistant text to conversation (but do NOT print raw tool dumps)
                 assistant_entry = {
@@ -470,7 +729,7 @@ When you have a conclusion, provide only a brief summary of the root cause."""
                     "content": assistant_text
                 }
 
-                if getattr(assistant_message, "tool_calls", None):
+                if has_tool_calls:
                     assistant_entry["tool_calls"] = [
                         {
                             "id": tool_call.id,
@@ -485,8 +744,12 @@ When you have a conclusion, provide only a brief summary of the root cause."""
 
                 messages.append(assistant_entry)
 
+                plan_step_num = None
+                tools_plan = []
+                action_plan = []
+
                 # If assistant indicated tool calls, process them silently (no big JSON prints)
-                if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
+                if has_tool_calls:
                     self._print_subsection("ACTION & EVIDENCE")
                     for idx, tool_call in enumerate(assistant_message.tool_calls, start=1):
                         tool_name = tool_call.function.name
@@ -497,6 +760,36 @@ When you have a conclusion, provide only a brief summary of the root cause."""
                             tool_input = {}
                             tool_input_display = tool_call.function.arguments or {}
                         tool_call_id = tool_call.id
+
+                        tools_plan.append({
+                            "tool": tool_name,
+                            "params": tool_input_display,
+                            "purpose": f"Iteration {self.step_counter} data gathering"
+                        })
+                        action_plan.append(f"Use {tool_name} with params {tool_input_display}")
+
+                        if plan_step_num is None:
+                            plan_step_num = self._add_cot_step(
+                                step_type="planning",
+                                title=f"Iteration {self.step_counter}: Action Plan",
+                                parent_step=reason_step_num,
+                                action_plan=action_plan.copy(),
+                                tools_to_call=tools_plan.copy(),
+                                next_action="Execute planned tools"
+                            )
+                        else:
+                            # Update planning lists for subsequent tools
+                            self._update_cot_step(plan_step_num, action_plan=action_plan.copy(), tools_to_call=tools_plan.copy())
+
+                        action_step_num = self._add_cot_step(
+                            step_type="action",
+                            title=f"Execute Tool: {tool_name}",
+                            parent_step=plan_step_num,
+                            tool=tool_name,
+                            tool_params=tool_input_display,
+                            status="awaiting_results"
+                        )
+                        self._cot_tool_map[tool_call_id] = action_step_num
 
                         # Execute tool (returns JSON string)
                         result = self.tool_executor.execute_tool(tool_name, tool_input)
@@ -531,8 +824,12 @@ When you have a conclusion, provide only a brief summary of the root cause."""
                         self._log(self._format_json(result_dict))
                         self._log("")
 
+                        self._update_cot_step(action_step_num, status="completed", result_summary=self._format_json(result_dict))
+                        self._register_tool_success(action_step_num, True)
+                        self._record_observation(action_step_num, tool_name, result_dict)
+
                 # Check if done
-                if finish_reason == "stop" or not (hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls):
+                if finish_reason == "stop" or not has_tool_calls:
                     # Build a concise summary from assistant content and evidence
                     concise_summary, confidence = self._derive_concise_summary(assistant_text, self.investigation.evidence_trail)
 
@@ -551,13 +848,93 @@ When you have a conclusion, provide only a brief summary of the root cause."""
                             self._log(f"• {tool_label}:")
                             self._log(self._format_json(ev.get('result', {})))
                             self._log("")
+
+                    if self._cot_conclusion_step_num is None:
+                        parent_for_conclusion = sorted(self._cot_action_steps) if self._cot_action_steps else self._cot_last_added_step
+                        self._cot_conclusion_step_num = self._add_cot_step(
+                            step_type="conclusion",
+                            title="Final Analysis and Conclusion",
+                            parent_step=parent_for_conclusion,
+                            agent_thoughts=trimmed_text or concise_summary
+                        )
+
+                    conclusion_data = {
+                        "type": self._slugify(concise_summary),
+                        "summary": concise_summary,
+                        "confidence": round(confidence, 2),
+                        "affected_people": alert.get("metrics", {}).get("team_members_affected", []),
+                        "evidence_strength": self._determine_evidence_strength(len(self.investigation.evidence_trail))
+                    }
+
+                    self._update_cot_step(
+                        self._cot_conclusion_step_num,
+                        confidence=round(confidence, 2),
+                        confidence_reason="Confidence derived from analysis of gathered evidence.",
+                        evidence_gathered=len(self.investigation.evidence_trail),
+                        root_cause=conclusion_data
+                    )
+
+                    self._finalize_cot_logs(self.investigation, confidence)
                     break
 
         except Exception as e:
             self._print_subsection("ERROR")
             self._log(f"⚠️  OpenAI API call failed: {e}")
             self._log("   Using mock investigation data for demo...\n")
-            return self._create_mock_investigation(investigation_id, alert)
+            mock_investigation = self._create_mock_investigation(investigation_id, alert)
+            error_step = self._add_cot_step(
+                step_type="reasoning",
+                title="OpenAI Failure Handling",
+                parent_step=self._cot_last_added_step,
+                agent_thoughts=f"OpenAI API call failed: {e}. Using mock investigation data instead."
+            )
+            self._cot_conclusion_step_num = self._add_cot_step(
+                step_type="conclusion",
+                title="Fallback Investigation Summary",
+                parent_step=error_step,
+                agent_thoughts=mock_investigation.root_cause,
+                confidence=round(mock_investigation.confidence_score, 2),
+                confidence_reason="OpenAI API failure triggered fallback to mock investigation.",
+                evidence_gathered=len(mock_investigation.evidence_trail),
+                root_cause={
+                    "type": self._slugify(mock_investigation.root_cause),
+                    "summary": mock_investigation.root_cause,
+                    "confidence": round(mock_investigation.confidence_score, 2),
+                    "affected_people": alert.get("metrics", {}).get("team_members_affected", []),
+                    "evidence_strength": self._determine_evidence_strength(len(mock_investigation.evidence_trail))
+                }
+            )
+            self._finalize_cot_logs(mock_investigation, mock_investigation.confidence_score)
+            return mock_investigation
+
+        if not self._cot_payload_saved:
+            summary = self.investigation.root_cause or "Investigation incomplete"
+            confidence = self.investigation.confidence_score or 0.0
+            if self._cot_conclusion_step_num is None:
+                parent_for_conclusion = sorted(self._cot_action_steps) if self._cot_action_steps else self._cot_last_added_step
+                self._cot_conclusion_step_num = self._add_cot_step(
+                    step_type="conclusion",
+                    title="Final Analysis and Conclusion",
+                    parent_step=parent_for_conclusion,
+                    agent_thoughts=summary
+                )
+
+            conclusion_data = {
+                "type": self._slugify(summary),
+                "summary": summary,
+                "confidence": round(confidence, 2),
+                "affected_people": self._cot_alert_snapshot.get("metrics", {}).get("team_members_affected", []),
+                "evidence_strength": self._determine_evidence_strength(len(self.investigation.evidence_trail))
+            }
+
+            self._update_cot_step(
+                self._cot_conclusion_step_num,
+                confidence=round(confidence, 2),
+                confidence_reason="Auto-generated after investigation loop end.",
+                evidence_gathered=len(self.investigation.evidence_trail),
+                root_cause=conclusion_data
+            )
+            self._finalize_cot_logs(self.investigation, confidence)
 
         return self.investigation
 
