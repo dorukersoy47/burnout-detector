@@ -1,0 +1,6 @@
+[
+  {"date": "2025-11-01", "start": 540, "end": 600, "duration": 60, "title": "Standup"},
+  {"date": "2025-11-01", "start": 610, "end": 670, "duration": 60, "title": "Design Review"},
+  {"date": "2025-11-01", "start": 690, "end": 750, "duration": 60, "title": "1:1"},
+  {"date": "2025-11-01", "start": 780, "end": 1020, "duration": 240, "title": "Focus Work"}
+]
