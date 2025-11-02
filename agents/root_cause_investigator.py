@@ -156,17 +156,19 @@ class RootCauseInvestigator:
     - Changes direction if needed
     """
 
-    def __init__(self):
+    def __init__(self, verbose: bool = True):
+        self.verbose = verbose
+        self.step_counter = 0
         # Get API key from config
         if Config.is_openai_configured():
             try:
                 self.client = OpenAI(api_key=Config.OPENAI_API_KEY)
-                print("✅ OpenAI client initialized (API key from config)")
+                self._log("✅ OpenAI client initialized (API key from config)")
             except Exception as e:
-                print(f"⚠️ OpenAI client init failed: {e}")
+                self._log(f"⚠️ OpenAI client init failed: {e}")
                 self.client = None
         else:
-            print("⚠️ No OPENAI_API_KEY set in config.py — OpenAI client disabled, using mock investigation")
+            self._log("⚠️ No OPENAI_API_KEY set in config.py — OpenAI client disabled, using mock investigation")
             self.client = None
 
         self.model = Config.OPENAI_MODEL
@@ -252,6 +254,32 @@ class RootCauseInvestigator:
                 }
             }
         ]
+
+    # ---------------------------------------------------------------------
+    # Formatting helpers
+    # ---------------------------------------------------------------------
+
+    def _log(self, message: str = "", *, flush: bool = False) -> None:
+        if self.verbose:
+            print(message, flush=flush)
+
+    def _print_section(self, title: str) -> None:
+        if not self.verbose:
+            return
+        line = "═" * 70
+        print(f"\n{line}\n{title}\n{line}")
+
+    def _print_subsection(self, title: str) -> None:
+        if not self.verbose:
+            return
+        line = "─" * 70
+        print(f"\n{line}\n{title}\n{line}")
+
+    def _format_json(self, data: Dict) -> str:
+        try:
+            return json.dumps(data, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(data)
 
     def _create_mock_investigation(self, investigation_id: str, alert: Dict) -> Investigation:
         """Create a mock investigation when API is unavailable"""
@@ -342,16 +370,20 @@ class RootCauseInvestigator:
             status="in_progress"
         )
 
-        print("\n" + "=" * 70)
-        print("🔍 ROOT CAUSE INVESTIGATOR AGENT")
-        print("=" * 70)
-        print(f"\n📊 Alert: {alert.get('description', 'Productivity dropped')}")
-        print(f"🎯 Investigation ID: {investigation_id}\n")
+        self.step_counter = 0
+
+        self._print_section("🔍 ROOT CAUSE INVESTIGATOR AGENT")
+        self._log(f"🎯 Investigation ID: {investigation_id}")
+        self._log(f"📊 Alert: {alert.get('description', 'Productivity dropped')}")
+        self._print_subsection("CONTEXT")
+        self._log(self._format_json(alert))
+        self._log("")
 
         # If no OpenAI client, use mock investigation
         if not self.client:
-            print("\n⚠️  Investigation skipped due to missing OPENAI_API_KEY")
-            print("   Using mock investigation data for demo...\n")
+            self._print_subsection("NOTICE")
+            self._log("⚠️  Investigation skipped due to missing OPENAI_API_KEY")
+            self._log("   Using mock investigation data for demo...\n")
             return self._create_mock_investigation(investigation_id, alert)
 
         # Run agentic loop with OpenAI
@@ -382,7 +414,13 @@ TOOLS AVAILABLE:
 
 Be thorough but efficient. Stop investigating once you have strong evidence.
 
-IMPORTANT: When you reach a conclusion, provide ONLY a clear, concise summary of the root cause. Do not include tool names, technical analysis, or hypothesis numbers in your final response. Just state what the problem is in 1-2 sentences."""
+IMPORTANT: When you reach a conclusion, provide ONLY a clear, concise summary of the root cause. Do not include tool names, technical analysis, or hypothesis numbers in your final response. Just state what the problem is in 1-2 sentences.
+
+FORMAT REQUIREMENTS:
+- Narrate your reasoning explicitly. Use sections titled "STEP {n}: ..." to walk through hypotheses, actions, evidence, and reflections.
+- Under each step include subsections with labels like "AGENT THINKS", "ACTION PLAN", "EVIDENCE", and "REFLECTION" when relevant so the investigation reads like a transparent case log.
+- Explain why you choose each tool before calling it and how the resulting evidence affects each hypothesis.
+- Keep the final message under 3500 tokens by being structured but concise."""
 
         messages = [
             {
@@ -398,7 +436,8 @@ When you have a conclusion, provide only a brief summary of the root cause."""
         max_iterations = Config.MAX_INVESTIGATION_ITERATIONS
         iteration = 0
 
-        print("🔎 Investigating root cause...\n")
+        self._print_section("INVESTIGATION START")
+        self._log("🔎 Investigating root cause...\n")
 
         try:
             while iteration < max_iterations:
@@ -416,10 +455,19 @@ When you have a conclusion, provide only a brief summary of the root cause."""
                 assistant_message = response.choices[0].message
                 finish_reason = response.choices[0].finish_reason
 
+                self.step_counter += 1
+
+                assistant_text = assistant_message.content or ""
+                if assistant_text.strip():
+                    self._print_section(f"STEP {self.step_counter}: AGENT REASONING")
+                    self._log("🧠 AGENT THINKS:")
+                    self._log(assistant_text.strip())
+                    self._log("")
+
                 # Append assistant text to conversation (but do NOT print raw tool dumps)
                 assistant_entry = {
                     "role": "assistant",
-                    "content": assistant_message.content or ""
+                    "content": assistant_text
                 }
 
                 if getattr(assistant_message, "tool_calls", None):
@@ -439,15 +487,23 @@ When you have a conclusion, provide only a brief summary of the root cause."""
 
                 # If assistant indicated tool calls, process them silently (no big JSON prints)
                 if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
-                    print(f"   📋 Gathering evidence (step {iteration})...")
-                    for tool_call in assistant_message.tool_calls:
+                    self._print_subsection("ACTION & EVIDENCE")
+                    for idx, tool_call in enumerate(assistant_message.tool_calls, start=1):
                         tool_name = tool_call.function.name
-                        tool_input = json.loads(tool_call.function.arguments)
+                        try:
+                            tool_input = json.loads(tool_call.function.arguments or "{}")
+                            tool_input_display = tool_input
+                        except json.JSONDecodeError:
+                            tool_input = {}
+                            tool_input_display = tool_call.function.arguments or {}
                         tool_call_id = tool_call.id
 
                         # Execute tool (returns JSON string)
                         result = self.tool_executor.execute_tool(tool_name, tool_input)
-                        result_dict = json.loads(result)
+                        try:
+                            result_dict = json.loads(result)
+                        except json.JSONDecodeError:
+                            result_dict = {"raw": result}
 
                         # Track evidence (store full result internally, but do not print it)
                         self.investigation.evidence_trail.append({
@@ -464,26 +520,43 @@ When you have a conclusion, provide only a brief summary of the root cause."""
                             "content": result
                         })
 
-                        # Print only concise acknowledgement
-                        print(f"      • Evidence gathered from {tool_name}")
+                        # Verbose logging for human observers
+                        self._log(f"🛠️  AGENT DECISION {idx}: calling `{tool_name}`")
+                        if tool_input_display:
+                            self._log("   Parameters:")
+                            self._log(self._format_json(tool_input_display))
+                        else:
+                            self._log("   Parameters: {}")
+                        self._log("🤖 TOOL RESULT:")
+                        self._log(self._format_json(result_dict))
+                        self._log("")
 
                 # Check if done
                 if finish_reason == "stop" or not (hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls):
                     # Build a concise summary from assistant content and evidence
-                    assistant_text = assistant_message.content or ""
                     concise_summary, confidence = self._derive_concise_summary(assistant_text, self.investigation.evidence_trail)
 
                     self.investigation.root_cause = concise_summary
                     self.investigation.confidence_score = confidence
                     self.investigation.status = "complete"
 
-                    print("\n✅ Investigation Complete!\n")
-                    print(f"📌 Root Cause Summary: {concise_summary}")
+                    self._print_section("INVESTIGATION COMPLETE")
+                    self._log(f"✅ Root Cause Identified (Confidence: {confidence:.2f})")
+                    self._log(f"📌 Root Cause Summary: {concise_summary}")
+                    self._log("")
+                    if self.investigation.evidence_trail:
+                        self._print_subsection("EVIDENCE REVIEW")
+                        for ev in self.investigation.evidence_trail:
+                            tool_label = ev.get("tool", "unknown_tool")
+                            self._log(f"• {tool_label}:")
+                            self._log(self._format_json(ev.get('result', {})))
+                            self._log("")
                     break
 
         except Exception as e:
-            print(f"\n⚠️  OpenAI API call failed: {e}")
-            print("   Using mock investigation data for demo...\n")
+            self._print_subsection("ERROR")
+            self._log(f"⚠️  OpenAI API call failed: {e}")
+            self._log("   Using mock investigation data for demo...\n")
             return self._create_mock_investigation(investigation_id, alert)
 
         return self.investigation

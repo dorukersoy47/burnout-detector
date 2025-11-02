@@ -38,6 +38,12 @@ class InterventionPlanner:
     - Predicts outcomes
     """
 
+    # NOTE: For the current MVP some supporting tools return hardcoded mock data
+    #       (see entries under tools/) instead of making live API calls. This is
+    #       acceptable for the hackathon demo, but expanding beyond the MVP will
+    #       require fleshing out those integrations (Slack, calendar, etc.) with
+    #       real query() methods and API-backed responses.
+
     def __init__(self):
         # Get API key from config
         if Config.is_openai_configured():

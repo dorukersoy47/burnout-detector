@@ -4,11 +4,21 @@ Runs through: Anomaly → Investigation → Planning → Supervision → Monitor
 """
 
 import json
-from anomaly_detector import AnomalyDetector
-from root_cause_investigator import RootCauseInvestigator
-from intervention_planner import InterventionPlanner
-from supervisor_agent import SupervisorAgent
-from outcome_monitor import OutcomeMonitor
+import os
+import sys
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from agents.anomaly_detector import AnomalyDetector
+from agents.root_cause_investigator import RootCauseInvestigator
+from agents.intervention_planner import InterventionPlanner
+from agents.supervisor_agent import SupervisorAgent
+from agents.outcome_monitor import OutcomeMonitor
+
 
 
 def print_section(title: str):
@@ -118,17 +128,29 @@ def demo_complete_workflow():
 
     orchestration = supervisor.orchestrate(inv_dict, plan)
 
-    print(f"\n✅ Orchestration Complete!")
-    print(f"   Validation: {'PASSED' if orchestration['validation']['passed'] else 'FAILED'}")
-    print(f"   Risk Level: {orchestration['risk_level'].upper()}")
-    print(f"   Approver: {orchestration['approval']['approver'].upper()}")
-    print(f"   Approval Status: {orchestration['approval']['status'].upper()}")
-    print(f"   Execution Status: {orchestration['execution']['status'].upper()}")
+    validation_result = orchestration.get("validation", {})
+    validation_passed = validation_result.get("passed", False)
 
-    if orchestration['execution']['actions_taken'] > 0:
-        print(f"\n📋 Actions Executed: {orchestration['execution']['actions_taken']}")
-        for action in orchestration['execution']['action_details'][:3]:
-            print(f"   {action}")
+    print(f"\n✅ Orchestration Complete!")
+    print(f"   Validation: {'PASSED' if validation_passed else 'FAILED'}")
+
+    if not validation_passed:
+        failure_reason = orchestration.get("reason", "validation_failed")
+        print(f"   Orchestration stopped early (reason: {failure_reason})")
+    else:
+        risk_level = orchestration.get("risk_level", "unknown")
+        approval = orchestration.get("approval", {})
+        execution = orchestration.get("execution", {})
+
+        print(f"   Risk Level: {risk_level.upper()}")
+        print(f"   Approver: {approval.get('approver', 'unknown').upper()}")
+        print(f"   Approval Status: {approval.get('status', 'pending').upper()}")
+        print(f"   Execution Status: {execution.get('status', 'pending').upper()}")
+
+        if execution.get('actions_taken', 0) > 0:
+            print(f"\n📋 Actions Executed: {execution['actions_taken']}")
+            for action in execution.get('action_details', [])[:3]:
+                print(f"   {action}")
 
     # ==================== PHASE 5: OUTCOME MONITORING ====================
     print_section("PHASE 5: OUTCOME MONITORING")
