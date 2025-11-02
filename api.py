@@ -4,6 +4,8 @@ from pathlib import Path
 import json
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
 
 
 app = FastAPI(title="Lighthouse.ai API", version="0.1.0")
@@ -35,4 +37,12 @@ async def get_latest_investigation_cot():
             status_code=500,
             detail=f"Error reading investigation data: {exc}"
         ) from exc
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Restrict this to your frontend URL in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
