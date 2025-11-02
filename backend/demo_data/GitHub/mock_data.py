@@ -4,15 +4,14 @@ Reads from CSV files in ./mock_data directory
 Simulates team-level metrics without API calls
 """
 
-import os
 import csv
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
+from datetime import datetime
+from typing import Dict, List, Any
 from statistics import median
 from pathlib import Path
 
-from config import Config
+from backend.config import Config
 
 logger = logging.getLogger(__name__)
 

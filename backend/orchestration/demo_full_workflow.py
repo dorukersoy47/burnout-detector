@@ -3,7 +3,6 @@ Demo script - Shows the complete system workflow end-to-end
 Runs through: Anomaly → Investigation → Planning → Supervision → Monitoring
 """
 
-import json
 import os
 import sys
 
@@ -13,11 +12,11 @@ PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from agents.anomaly_detector import AnomalyDetector
-from agents.root_cause_investigator import RootCauseInvestigator
-from agents.intervention_planner import InterventionPlanner
-from agents.supervisor_agent import SupervisorAgent
-from agents.outcome_monitor import OutcomeMonitor
+from backend.agents.anomaly_detector import AnomalyDetector
+from backend.agents.root_cause_investigator import RootCauseInvestigator
+from backend.agents.intervention_planner import InterventionPlanner
+from backend.agents.supervisor_agent import SupervisorAgent
+from backend.agents.outcome_monitor import OutcomeMonitor
 
 
 

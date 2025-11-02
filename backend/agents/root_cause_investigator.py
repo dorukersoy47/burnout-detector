@@ -10,10 +10,9 @@ import re
 from pathlib import Path
 from openai import OpenAI
 from typing import Dict, List, Optional, Union
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
-import random
-from config import Config
+from dataclasses import dataclass
+from datetime import datetime
+from backend.config import Config
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 COT_OUTPUT_PATH = ROOT_DIR / "latest_investigation_cot.json"

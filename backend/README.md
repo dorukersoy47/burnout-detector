@@ -84,14 +84,18 @@ python orchestration/demo_full_workflow.py
 ```
 
 ### Use individual agents
+
 ```python
-from agents.anomaly_detector import AnomalyDetector
+from backend.agents import AnomalyDetector
+
 alert = AnomalyDetector().check_for_anomalies()
 
-from agents.root_cause_investigator import RootCauseInvestigator
+from backend.agents import RootCauseInvestigator
+
 investigation = RootCauseInvestigator().investigate(alert)
 
-from agents.intervention_planner import InterventionPlanner
+from backend.agents import InterventionPlanner
+
 plan = InterventionPlanner().plan(investigation.root_cause, {})
 ```
 
