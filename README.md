@@ -1,5 +1,5 @@
 # Lighthouse.ai — *“AI agents that investigate why your team's productivity drops—not just that it did.”*  
-![Lighthouse.ai Logo Placeholder](docs/assets/logo-placeholder.png)
+![Lighthouse.ai Logo](assets/Screenshot 2025-11-02 at 12.21.04 PM.png)
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](#) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license) [![AgentVerse Hackathon](https://img.shields.io/badge/AgentVerse-2025-orange.svg)](#hackathon-context)
 
