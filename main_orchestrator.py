@@ -11,6 +11,7 @@ from root_cause_investigator import RootCauseInvestigator
 from intervention_planner import InterventionPlanner
 from supervisor_agent import SupervisorAgent
 from outcome_monitor import OutcomeMonitor
+from typing import Dict
 
 
 class ProductivityAgentSystem:

@@ -417,10 +417,25 @@ When you have a conclusion, provide only a brief summary of the root cause."""
                 finish_reason = response.choices[0].finish_reason
 
                 # Append assistant text to conversation (but do NOT print raw tool dumps)
-                messages.append({
+                assistant_entry = {
                     "role": "assistant",
-                    "content": assistant_message.content
-                })
+                    "content": assistant_message.content or ""
+                }
+
+                if getattr(assistant_message, "tool_calls", None):
+                    assistant_entry["tool_calls"] = [
+                        {
+                            "id": tool_call.id,
+                            "type": tool_call.type,
+                            "function": {
+                                "name": tool_call.function.name,
+                                "arguments": tool_call.function.arguments,
+                            },
+                        }
+                        for tool_call in assistant_message.tool_calls
+                    ]
+
+                messages.append(assistant_entry)
 
                 # If assistant indicated tool calls, process them silently (no big JSON prints)
                 if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
