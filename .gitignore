@@ -205,3 +205,16 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Burnout Detector Specific
+# Event bus files (JSON)
+events/
+test_events/
+
+# SQLite databases
+*.db
+slack_memory.db
+test_memory.db
+
+# Environment files with tokens
+slack-integration/.env
